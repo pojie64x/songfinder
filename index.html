@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#111418">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Song Finder</title>
+<style>
+:root{--bg:#111418;--card:#1c2128;--ink:#f1f3f5;--muted:#9aa4b2;--acc:#3ddc97;--line:#2b333d}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.4 system-ui,-apple-system,Roboto,sans-serif}
+.top{position:sticky;top:0;z-index:5;background:var(--bg);padding-top:env(safe-area-inset-top,0)}
+.player{display:none;aspect-ratio:16/9;background:#000;width:100%}
+.player.on{display:block}
+.player iframe{width:100%;height:100%}
+.now{display:none;padding:8px 14px;font-size:.9rem;border-bottom:1px solid var(--line)}
+.now.on{display:flex;gap:10px;align-items:center;justify-content:space-between}
+.now span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.now a{color:var(--acc);white-space:nowrap}
+form{display:flex;gap:8px;padding:12px 14px}
+input,button{font:inherit;color:var(--ink);border-radius:12px;border:1px solid var(--line);background:var(--card);padding:12px}
+input{flex:1;min-width:0}
+button{background:var(--acc);color:#06281a;border:0;font-weight:700;cursor:pointer}
+button.ghost{background:transparent;color:var(--muted);border:1px solid var(--line);font-weight:400}
+:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+main{padding:0 14px calc(24px + env(safe-area-inset-bottom,0))}
+ul{list-style:none;margin:0;padding:0;display:grid;gap:10px}
+li{display:flex;gap:12px;align-items:center;padding:8px;border-radius:12px;background:var(--card);cursor:pointer;border:1px solid transparent}
+li.playing{border-color:var(--acc)}
+li img{width:116px;aspect-ratio:16/9;object-fit:cover;border-radius:8px;flex:none}
+.t{min-width:0}
+.t b{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;font-weight:600;font-size:.95rem}
+.t small{color:var(--muted)}
+li.playing small{color:var(--acc)}
+.msg{color:var(--muted);padding:8px 2px}
+.err{color:#ff8a8a}
+.key{display:none;margin:0 14px 8px;padding:12px;background:var(--card);border-radius:12px;font-size:.9rem;color:var(--muted)}
+.key.on{display:block}
+.key p{margin:0 0 8px}
+.key div{display:flex;gap:8px}
+.bar{display:flex;justify-content:flex-end;padding:0 14px}
+.bar button{padding:6px 12px;font-size:.85rem}
+</style>
+</head>
+<body>
+<div class="top">
+  <div class="player" id="playerBox"><div id="yt"></div></div>
+  <div class="now" id="now"><span id="nowTitle"></span><a id="nowLink" target="_blank" rel="noopener">Open in YouTube</a></div>
+  <form id="f">
+    <input id="q" type="search" placeholder="Search song or artist" autocomplete="off" required>
+    <button>Search</button>
+  </form>
+</div>
+
+<div class="key" id="keyBox">
+  <p>Paste your YouTube Data API v3 key. It is saved only on this phone.</p>
+  <div><input id="key" placeholder="AIza..." autocomplete="off"><button type="button" id="saveKey">Save</button></div>
+</div>
+<div class="bar"><button class="ghost" id="keyBtn" type="button">API key</button></div>
+
+<main>
+  <div id="status" class="msg">Search for a song to start listening.</div>
+  <ul id="results"></ul>
+</main>
+
+<script src="https://www.youtube.com/iframe_api"></script>
+<script>
+const $ = id => document.getElementById(id);
+const store = {
+  get(k){ try { return localStorage.getItem(k); } catch { return null; } },
+  set(k,v){ try { localStorage.setItem(k,v); } catch {} }
+};
+let songs = [], idx = -1, player = null, pending = null;
+
+function onYouTubeIframeAPIReady(){
+  player = new YT.Player('yt', {
+    width:'100%', height:'100%',
+    playerVars:{ playsinline:1, rel:0, autoplay:1 },
+    events:{
+      onReady(){ if (pending) { player.loadVideoById(pending); pending = null; } },
+      onStateChange(e){ if (e.data === YT.PlayerState.ENDED) play(idx + 1); },
+      onError(){
+        // Embedding blocked by the video owner: skip to the next result.
+        $('status').textContent = 'That video cannot be embedded. Use "Open in YouTube" or pick another.';
+      }
+    }
+  });
+}
+
+function play(i){
+  if (i < 0 || i >= songs.length) return;
+  idx = i;
+  const s = songs[i];
+  $('playerBox').classList.add('on');
+  $('now').classList.add('on');
+  $('nowTitle').textContent = s.title;
+  $('nowLink').href = 'https://www.youtube.com/watch?v=' + s.id;
+  if (player && player.loadVideoById) player.loadVideoById(s.id); else pending = s.id;
+  document.querySelectorAll('li').forEach((li, n) => {
+    li.classList.toggle('playing', n === i);
+    li.querySelector('small').textContent = n === i ? 'Now playing' : songs[n].channel;
+  });
+}
+
+async function search(term){
+  const key = store.get('yt_key');
+  if (!key){ $('keyBox').classList.add('on'); throw new Error('Add your YouTube API key first.'); }
+  const p = new URLSearchParams({
+    part:'snippet', type:'video', videoCategoryId:'10', videoEmbeddable:'true',
+    maxResults:'20', q:term, key
+  });
+  const r = await fetch('https://www.googleapis.com/youtube/v3/search?' + p);
+  const d = await r.json();
+  if (!r.ok) throw new Error(d.error?.message || 'Search failed.');
+  return d.items.map(i => ({
+    id:i.id.videoId, title:decode(i.snippet.title),
+    channel:i.snippet.channelTitle, thumb:i.snippet.thumbnails.medium.url
+  }));
+}
+
+$('f').addEventListener('submit', async e => {
+  e.preventDefault();
+  const term = $('q').value.trim();
+  if (!term) return;
+  $('status').className = 'msg'; $('status').textContent = 'Searching…';
+  $('results').innerHTML = '';
+  try {
+    songs = await search(term); idx = -1;
+    $('status').textContent = songs.length ? '' : 'No songs found. Try another title.';
+    $('results').innerHTML = songs.map((s,i) =>
+      `<li data-i="${i}"><img src="${s.thumb}" alt=""><div class="t"><b>${esc(s.title)}</b><small>${esc(s.channel)}</small></div></li>`).join('');
+    document.querySelectorAll('li').forEach(li => li.onclick = () => play(+li.dataset.i));
+    document.activeElement.blur();
+  } catch (err){
+    $('status').className = 'msg err'; $('status').textContent = err.message;
+  }
+});
+
+$('saveKey').onclick = () => {
+  const k = $('key').value.trim();
+  if (k){ store.set('yt_key', k); $('keyBox').classList.remove('on'); $('status').textContent = 'Key saved. Search for a song.'; }
+};
+$('keyBtn').onclick = () => $('keyBox').classList.toggle('on');
+if (!store.get('yt_key')) $('keyBox').classList.add('on');
+
+function esc(s){ return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function decode(s){ const t = document.createElement('textarea'); t.innerHTML = s; return t.value; }
+</script>
+</body>
+</html>
